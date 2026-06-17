@@ -2,74 +2,190 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-
-const questions = [
-  {
-    question: "What is Flyway used for?",
-    options: [
-      { text: "Database migration tool", score: 5 },
-      { text: "Frontend framework", score: 0 },
-      { text: "Cloud storage system", score: 0 },
-      { text: "AI model trainer", score: 0 }
-    ]
-  },
-  {
-    question: "Flyway migrations are usually:",
-    options: [
-      { text: "Randomly executed", score: 0 },
-      { text: "Version controlled", score: 5 },
-      { text: "Deleted after use", score: 0 },
-      { text: "Stored in cache only", score: 0 }
-    ]
-  },
-  {
-    question: "Flyway integrates well with:",
-    options: [
-      { text: "CI/CD pipelines", score: 5 },
-      { text: "Gaming engines", score: 0 },
-      { text: "Photo editors", score: 0 },
-      { text: "Music apps", score: 0 }
-    ]
-  }
-];
+import { supabase } from "../../lib/supabaseClient";
 
 export default function TestPage() {
   const router = useRouter();
 
+  const [questions, setQuestions] = useState<any[]>([]);
   const [index, setIndex] = useState(0);
-  const [score, setScore] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [timeLeft, setTimeLeft] = useState(20 * 60);
 
-  const current = questions[index];
+  const candidateId =
+    typeof window !== "undefined"
+      ? localStorage.getItem("candidateId")
+      : null;
 
-  const selectAnswer = (option: any) => {
-    setScore(score + option.score);
+  const sessionId =
+    typeof window !== "undefined"
+      ? localStorage.getItem("sessionId")
+      : null;
 
-    if (index + 1 < questions.length) {
-      setIndex(index + 1);
+  // =========================
+  // LOAD QUESTIONS (STABLE VERSION)
+  // =========================
+  useEffect(() => {
+    const loadQuestions = async () => {
+      const { data, error } = await supabase
+        .from("questions")
+        .select("*, options(*)");
+
+      if (error) {
+        console.error("Questions load error:", error);
+        setLoading(false);
+        return;
+      }
+
+      setQuestions(data || []);
+      setLoading(false);
+    };
+
+    loadQuestions();
+  }, []);
+
+  // =========================
+  // TIMER
+  // =========================
+  useEffect(() => {
+    if (timeLeft <= 0) {
+      finishExam();
+      return;
+    }
+
+    const interval = setInterval(() => {
+      setTimeLeft((t) => t - 1);
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }, [timeLeft]);
+
+  const formatTime = (seconds: number) => {
+    const m = Math.floor(seconds / 60);
+    const s = seconds % 60;
+    return `${m}:${s < 10 ? "0" : ""}${s}`;
+  };
+
+  // =========================
+  // ANSWER SELECT
+  // =========================
+  const selectAnswer = async (questionId: number, option: any) => {
+    if (!candidateId || !sessionId) return;
+
+    await supabase.from("candidate_answers").insert({
+      candidate_id: candidateId,
+      session_id: sessionId,
+      question_id: questionId,
+      option_id: option.id,
+    });
+
+    const next = index + 1;
+
+    if (next < questions.length) {
+      setIndex(next);
     } else {
-      const percent = (score / (questions.length * 5)) * 100;
-
-      localStorage.setItem("finalScore", percent.toString());
-
-      router.push("/result");
+      finishExam();
     }
   };
 
+  // =========================
+  // FINISH EXAM
+  // =========================
+  const finishExam = async () => {
+    if (!candidateId || !sessionId) return;
+
+    const { data: answers } = await supabase
+      .from("candidate_answers")
+      .select("*, options(score)")
+      .eq("candidate_id", candidateId)
+      .eq("session_id", sessionId);
+
+    const totalScore = (answers || []).reduce(
+      (sum: number, a: any) => sum + (a.options?.score || 0),
+      0
+    );
+
+    const maxScore = questions.length * 5;
+    const percent = Math.round((totalScore / maxScore) * 100);
+
+    localStorage.setItem("finalScore", percent.toString());
+
+    router.push("/result");
+  };
+
+  // =========================
+  // LOADING STATE
+  // =========================
+  if (loading) {
+    return (
+      <div className="container">
+        <div className="card">Loading questions...</div>
+      </div>
+    );
+  }
+
+  // =========================
+  // EMPTY STATE (SAFE GUARD)
+  // =========================
+  if (!questions.length) {
+    return (
+      <div className="container">
+        <div className="card">
+          No exam questions found. Please check database.
+        </div>
+      </div>
+    );
+  }
+
+  const current = questions[index];
+
+  if (!current) {
+    return (
+      <div className="container">
+        <div className="card">
+          Loading question...
+        </div>
+      </div>
+    );
+  }
+
+  // =========================
+  // UI
+  // =========================
   return (
-    <div style={{ padding: 40 }}>
-      <h2>Question {index + 1}</h2>
+    <div className="container">
+      <div className="card">
 
-      <h3>{current.question}</h3>
+        <h1 className="title">FLYWAY DATABASE TEST</h1>
 
-      {current.options.map((opt, i) => (
-        <button
-          key={i}
-          onClick={() => selectAnswer(opt)}
-          style={{ display: "block", margin: 10, padding: 10 }}
-        >
-          {opt.text}
-        </button>
-      ))}
+        <div style={{ color: "red", fontSize: "18px", marginBottom: "10px" }}>
+          Time Left: {formatTime(timeLeft)}
+        </div>
+
+        <h2>
+          Question {index + 1} / {questions.length}
+        </h2>
+
+        <p className="subtitle">{current.question}</p>
+
+        {current.options?.map((opt: any) => (
+          <div
+            key={opt.id}
+            className="option"
+            onClick={() => selectAnswer(current.id, opt)}
+            style={{
+              padding: "12px",
+              margin: "8px 0",
+              border: "1px solid #ccc",
+              borderRadius: "8px",
+              cursor: "pointer",
+            }}
+          >
+            {opt.option_text}
+          </div>
+        ))}
+
+      </div>
     </div>
   );
 }
